@@ -1,7 +1,7 @@
 {
   "name": "fetcher-mcp",
   "version": "0.3.5",
-  "description": "MCP server for fetching web content using Playwright browser",
+  "description": "Enhanced MCP server for fetching web content using Playwright browser with aggressive HTML cleaning (96% size reduction) and simplified API",
   "private": false,
   "type": "module",
   "bin": {
@@ -33,14 +33,25 @@
     "@types/turndown": "^5.0.4",
     "typescript": "^5.3.3"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amjadbouhouch/fetcher-mcp.git"
+  },
+  "homepage": "https://github.com/amjadbouhouch/fetcher-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/amjadbouhouch/fetcher-mcp/issues"
+  },
   "main": "index.js",
   "keywords": [
     "mcp",
     "playwright",
     "web-scraping",
     "readability",
+    "content-extraction",
+    "html-cleaning",
+    "web-fetcher",
     "content-extraction"
   ],
-  "author": "",
+  "author": "Amjad Bouhouch",
   "license": "ISC"
 }
