@@ -4,6 +4,40 @@ import TurndownService from "turndown";
 import { FetchOptions, FetchResult } from "../types/index.js";
 import { logger } from "../utils/logger.js";
 
+// Firecrawl-inspired tag exclusion list for aggressive HTML cleaning
+const EXCLUDE_SELECTORS: string[] = [
+  'header', 'footer', 'nav', 'aside',
+  '.header', '.footer', '.sidebar', '#sidebar',
+  '.sidebar-section', '.sidebar-content',
+  '.sidebar-right', '.sidebar-wrapper',
+  '.aside', '.widget', '.widget-area',
+  '.modal', '.popup', '.overlay',
+  '.ad', '.ads', '.adsbygoogle',
+  '.advertisement', '.banner',
+  '.social', '.social-media', '.share',
+  '.breadcrumb', '.breadcrumbs',
+  '.related', '.related-posts',
+  '.comments', '#comments',
+  '.cookie', '.cookie-banner',
+  '#cookie-notice', '.gdpr',
+  '.newsletter', '.subscription',
+  '.search', '#search',
+  '.menu', '.navigation',
+  '.promo', '.promotion',
+  // Forms and inputs
+  'form', 'button', 'input', 'textarea', 'select',
+  // Pagination
+  '.pager', '.pagination', '[role="navigation"]',
+  // Icons
+  'i[class*="icon-"]', '.fa', '[class*="material-icons"]',
+  // Dynamic empty containers
+  '[id*="messages"]', '[id*="promotions"]',
+  // Social sharing
+  '.tweet', '.facebook', '.twitter',
+  // SVG elements (inline graphics)
+  'svg'
+];
+
 export class WebContentProcessor {
   private options: FetchOptions;
   private logPrefix: string;
@@ -11,6 +45,75 @@ export class WebContentProcessor {
   constructor(options: FetchOptions, logPrefix: string = "") {
     this.options = options;
     this.logPrefix = logPrefix;
+  }
+
+  /**
+   * Aggressively clean HTML by removing scripts, styles, and unwanted elements
+   * Based on Firecrawl's optimization strategy
+   */
+  private cleanHtml(html: string, url: string): string {
+    try {
+      // Remove HTML comments before parsing
+      html = html.replace(/<!--[\s\S]*?-->/g, '');
+
+      const dom = new JSDOM(html, { url });
+      const document = dom.window.document;
+      const sizeBefore = html.length;
+
+      // Remove unwanted tags completely
+      ['script', 'style', 'meta', 'noscript', 'link', 'head'].forEach(tag => {
+        document.querySelectorAll(tag).forEach(el => el.remove());
+      });
+
+      // Remove unwanted elements by selector
+      EXCLUDE_SELECTORS.forEach(selector => {
+        try {
+          document.querySelectorAll(selector).forEach(el => el.remove());
+        } catch (e) {
+          // Invalid selector, skip
+        }
+      });
+
+      // Remove hidden elements
+      document.querySelectorAll('[style*="display:none"], [style*="visibility:hidden"], [aria-hidden="true"]').forEach(el => el.remove());
+
+      // Remove empty elements
+      ['div', 'span', 'p', 'section'].forEach(tag => {
+        document.querySelectorAll(tag).forEach(el => {
+          if (!el.textContent?.trim() && el.children.length === 0) {
+            el.remove();
+          }
+        });
+      });
+
+      // Remove base64 encoded images (data:image/...)
+      document.querySelectorAll('img[src^="data:image"]').forEach(el => el.remove());
+
+      let cleanedHtml = document.body ? document.body.innerHTML : html;
+
+      // Normalize whitespace: remove excessive spaces, tabs, and newlines between tags
+      cleanedHtml = cleanedHtml
+        // Remove whitespace between tags
+        .replace(/>\s+</g, '><')
+        // Collapse multiple newlines into single newline
+        .replace(/\n\s*\n/g, '\n')
+        // Remove tabs
+        .replace(/\t/g, '')
+        // Trim leading and trailing whitespace
+        .trim();
+
+      const sizeAfter = cleanedHtml.length;
+      const reduction = sizeBefore > 0 ? Math.round((1 - sizeAfter / sizeBefore) * 100) : 0;
+
+      logger.info(
+        `${this.logPrefix} HTML cleaned: ${sizeBefore} → ${sizeAfter} chars (${reduction}% reduction)`
+      );
+
+      return cleanedHtml;
+    } catch (error) {
+      logger.warn(`${this.logPrefix} HTML cleaning failed: ${error}, using original HTML`);
+      return html;
+    }
   }
 
   async processPageContent(page: any, url: string): Promise<FetchResult> {
@@ -40,7 +143,7 @@ export class WebContentProcessor {
               logger.info(`${this.logPrefix} Successfully retrieved content despite timeout, length: ${html.length}`);
               
               const processedContent = await this.processContent(html, url);
-              const formattedContent = `Title: ${pageTitle}\nURL: ${url}\nContent:\n\n${processedContent}`;
+              const formattedContent = processedContent;
               
               return {
                 success: true,
@@ -119,7 +222,7 @@ export class WebContentProcessor {
       const processedContent = await this.processContent(html, url);
 
       // Format the response
-      const formattedContent = `Title: ${pageTitle}\nURL: ${url}\nContent:\n\n${processedContent}`;
+      const formattedContent = processedContent;
 
       return {
         success: true,
@@ -207,8 +310,14 @@ export class WebContentProcessor {
   private async processContent(html: string, url: string): Promise<string> {
     let contentToProcess = html;
 
-    // Extract main content if needed
-    if (this.options.extractContent) {
+    // Apply aggressive HTML cleaning if enabled
+    if (this.options.onlyMainContent) {
+      contentToProcess = this.cleanHtml(contentToProcess, url);
+    }
+
+    // For markdown format, extract main content and convert to markdown
+    if (this.options.format === 'markdown') {
+      // Extract main content using Readability
       logger.info(`${this.logPrefix} Extracting main content`);
       const dom = new JSDOM(html, { url });
       const reader = new Readability(dom.window.document);
@@ -224,30 +333,28 @@ export class WebContentProcessor {
           `${this.logPrefix} Successfully extracted main content, length: ${contentToProcess.length}`
         );
       }
-    }
 
-    // Convert to markdown if needed
-    let processedContent = contentToProcess;
-    if (!this.options.returnHtml) {
+      // Convert to markdown
       logger.info(`${this.logPrefix} Converting to Markdown`);
       const turndownService = new TurndownService();
-      processedContent = turndownService.turndown(contentToProcess);
+      contentToProcess = turndownService.turndown(contentToProcess);
       logger.info(
-        `${this.logPrefix} Successfully converted to Markdown, length: ${processedContent.length}`
+        `${this.logPrefix} Successfully converted to Markdown, length: ${contentToProcess.length}`
       );
     }
+    // For html format, return the HTML as-is (already cleaned if onlyMainContent was true)
 
     // Truncate if needed
     if (
       this.options.maxLength > 0 &&
-      processedContent.length > this.options.maxLength
+      contentToProcess.length > this.options.maxLength
     ) {
       logger.info(
         `${this.logPrefix} Content exceeds maximum length, will truncate to ${this.options.maxLength} characters`
       );
-      processedContent = processedContent.substring(0, this.options.maxLength);
+      contentToProcess = contentToProcess.substring(0, this.options.maxLength);
     }
 
-    return processedContent;
+    return contentToProcess;
   }
 }

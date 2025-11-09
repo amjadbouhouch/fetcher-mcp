@@ -25,22 +25,18 @@ export const fetchUrlTool = {
       waitUntil: {
         type: "string",
         description:
-          "Specifies when navigation is considered complete, options: 'load', 'domcontentloaded', 'networkidle', 'commit', default is 'load'",
+          "Specifies when navigation is considered complete, options: 'load', 'domcontentloaded', 'networkidle', 'commit', default is 'networkidle'",
       },
-      extractContent: {
-        type: "boolean",
+      format: {
+        type: "string",
+        enum: ["html", "markdown"],
         description:
-          "Whether to intelligently extract the main content, default is true",
+          "Output format for the content. 'markdown' (default) extracts main content and converts to markdown, 'html' returns raw HTML without extraction",
       },
       maxLength: {
         type: "number",
         description:
           "Maximum length of returned content (in characters), default is no limit",
-      },
-      returnHtml: {
-        type: "boolean",
-        description:
-          "Whether to return HTML content instead of Markdown, default is false",
       },
       waitForNavigation: {
         type: "boolean",
@@ -79,14 +75,14 @@ export async function fetchUrl(args: any) {
 
   const options: FetchOptions = {
     timeout: Number(args?.timeout) || 30000,
-    waitUntil: String(args?.waitUntil || "load") as
+    waitUntil: String(args?.waitUntil || "networkidle") as
       | "load"
       | "domcontentloaded"
       | "networkidle"
       | "commit",
-    extractContent: args?.extractContent !== false,
+    format: (args?.format === "html" ? "html" : "markdown") as "html" | "markdown",
+    onlyMainContent: true, // Always apply aggressive HTML cleaning
     maxLength: Number(args?.maxLength) || 0,
-    returnHtml: args?.returnHtml === true,
     waitForNavigation: args?.waitForNavigation === true,
     navigationTimeout: Number(args?.navigationTimeout) || 10000,
     disableMedia: args?.disableMedia !== false,
