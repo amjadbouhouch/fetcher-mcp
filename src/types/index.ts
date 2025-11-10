@@ -10,6 +10,7 @@ export interface FetchOptions {
     navigationTimeout: number;
     disableMedia: boolean;
     debug?: boolean;
+    search?: string;
   }
   
   export interface FetchResult {

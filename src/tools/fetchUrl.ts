@@ -58,6 +58,11 @@ export const fetchUrlTool = {
         description:
           "Whether to enable debug mode (showing browser window), overrides the --debug command line flag if specified",
       },
+      search: {
+        type: "string",
+        description:
+          "Optional regex pattern to filter markdown content. Only lines matching the pattern will be returned. Case-insensitive by default. Only applied when format is 'markdown'.",
+      },
     },
     required: ["url"],
   },
@@ -71,6 +76,20 @@ export async function fetchUrl(args: any) {
   if (!url) {
     logger.error(`URL parameter missing`);
     throw new Error("URL parameter is required");
+  }
+
+  const searchPattern = args?.search ? String(args.search).trim() : "";
+
+  // Validate regex pattern if provided
+  if (searchPattern) {
+    try {
+      new RegExp(searchPattern, 'i'); // Test if it's a valid regex
+      logger.info(`[FetchURL] Using search filter: ${searchPattern}`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`[FetchURL] Invalid regex pattern: ${errorMsg}`);
+      throw new Error(`Invalid search regex pattern: ${errorMsg}`);
+    }
   }
 
   const options: FetchOptions = {
@@ -87,6 +106,7 @@ export async function fetchUrl(args: any) {
     navigationTimeout: Number(args?.navigationTimeout) || 10000,
     disableMedia: args?.disableMedia !== false,
     debug: args?.debug,
+    search: searchPattern || undefined,
   };
 
   // Create browser service

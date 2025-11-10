@@ -149,10 +149,10 @@ export class WebContentProcessor {
             // If content is retrieved, process and return it
             if (html && html.trim().length > 0) {
               logger.info(`${this.logPrefix} Successfully retrieved content despite timeout, length: ${html.length}`);
-              
-              const processedContent = await this.processContent(html, url);
+
+              const processedContent = await this.processContent(html, url, page);
               const formattedContent = processedContent;
-              
+
               return {
                 success: true,
                 content: formattedContent,
@@ -210,7 +210,7 @@ export class WebContentProcessor {
 
       // Wait for the page to stabilize before getting content
       await this.ensurePageStability(page);
-      
+
       // Safely retrieve page title and content
       const { pageTitle, html } = await this.safelyGetPageInfo(page, url);
 
@@ -227,7 +227,7 @@ export class WebContentProcessor {
         `${this.logPrefix} Successfully retrieved web page content, length: ${html.length}`
       );
 
-      const processedContent = await this.processContent(html, url);
+      const processedContent = await this.processContent(html, url, page);
 
       // Format the response
       const formattedContent = processedContent;
@@ -256,21 +256,43 @@ export class WebContentProcessor {
       await page.waitForFunction(
         () => {
           return window.document.readyState === 'complete';
-        }, 
+        },
         { timeout: this.options.timeout }
       );
-      
+
       // Wait an extra short time to ensure page stability
       await page.waitForTimeout(500);
-      
+
       logger.info(`${this.logPrefix} Page has stabilized`);
     } catch (error) {
       logger.warn(`${this.logPrefix} Error ensuring page stability: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
+  // Added method: Dismiss modals/dialogs by simulating Escape key
+  private async dismissModals(page: any): Promise<void> {
+    try {
+      logger.info(`${this.logPrefix} Attempting to dismiss any modals/dialogs`);
+
+      // Press Escape key multiple times to handle nested modals
+      for (let i = 0; i < 3; i++) {
+        await page.keyboard.press('Escape');
+        // Wait a bit for modal to close and any animations to complete
+        await page.waitForTimeout(500);
+      }
+
+      // Wait for any transitions/animations to complete
+      await page.waitForTimeout(1000);
+
+      logger.info(`${this.logPrefix} Modal dismissal attempt completed`);
+    } catch (error) {
+      logger.warn(`${this.logPrefix} Error dismissing modals: ${error instanceof Error ? error.message : String(error)}`);
+      // Continue even if modal dismissal fails - content might still be accessible
+    }
+  }
+
   // Added method: Safely get page information (title and HTML content)
-  private async safelyGetPageInfo(page: any, url: string, retries = 3): Promise<{pageTitle: string, html: string}> {
+  private async safelyGetPageInfo(page: any, _url: string, retries = 3): Promise<{pageTitle: string, html: string}> {
     let pageTitle = "Untitled";
     let html = "";
     let attempt = 0;
@@ -315,12 +337,33 @@ export class WebContentProcessor {
     return { pageTitle, html };
   }
 
-  private async processContent(html: string, url: string): Promise<string> {
+  private async processContent(html: string, url: string, page?: any): Promise<string> {
     let contentToProcess = html;
 
     // Apply aggressive HTML cleaning if enabled
     if (this.options.onlyMainContent) {
       contentToProcess = this.cleanHtml(contentToProcess, url);
+
+      // If cleanup resulted in empty or very small content, try dismissing modals and retry
+      const MIN_CONTENT_LENGTH = 100;
+      if (contentToProcess.trim().length < MIN_CONTENT_LENGTH && page) {
+        logger.warn(
+          `${this.logPrefix} Cleaned content is too small (${contentToProcess.trim().length} chars), attempting to dismiss modals and retry`
+        );
+
+        // Dismiss modals
+        await this.dismissModals(page);
+
+        // Get fresh HTML after modal dismissal
+        const { html: freshHtml } = await this.safelyGetPageInfo(page, url);
+
+        if (freshHtml && freshHtml.length > 0) {
+          logger.info(`${this.logPrefix} Re-extracted content after modal dismissal, length: ${freshHtml.length}`);
+          // Clean the fresh HTML
+          contentToProcess = this.cleanHtml(freshHtml, url);
+          logger.info(`${this.logPrefix} Re-cleaned content length: ${contentToProcess.length}`);
+        }
+      }
     }
 
     // For markdown format, extract main content and convert to markdown
@@ -351,6 +394,24 @@ export class WebContentProcessor {
       logger.info(
         `${this.logPrefix} Successfully converted to Markdown, length: ${contentToProcess.length}`
       );
+
+      // Apply search filter if provided
+      if (this.options.search) {
+        try {
+          const searchRegex = new RegExp(this.options.search, 'i');
+          const lines = contentToProcess.split('\n');
+          const filteredLines = lines.filter((line) => searchRegex.test(line));
+          const linesBefore = lines.length;
+          contentToProcess = filteredLines.join('\n');
+          logger.info(
+            `${this.logPrefix} Search filter applied: ${linesBefore} lines → ${filteredLines.length} lines matching pattern`
+          );
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          logger.error(`${this.logPrefix} Error applying search filter: ${errorMsg}`);
+          // Continue with unfiltered content if regex fails
+        }
+      }
     }
     // For html format, return the HTML as-is (already cleaned if onlyMainContent was true)
 
