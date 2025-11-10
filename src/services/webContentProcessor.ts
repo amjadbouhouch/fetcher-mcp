@@ -1,4 +1,5 @@
 import { JSDOM } from "jsdom";
+import * as cheerio from "cheerio";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import { FetchOptions, FetchResult } from "../types/index.js";
@@ -6,26 +7,32 @@ import { logger } from "../utils/logger.js";
 
 // Firecrawl-inspired tag exclusion list for aggressive HTML cleaning
 const EXCLUDE_SELECTORS: string[] = [
-  'header', 'footer', 'nav', 'aside',
+  'header', 'footer', 'nav', 
+  'aside',
   '.header', '.footer', '.sidebar', '#sidebar',
   '.sidebar-section', '.sidebar-content',
   '.sidebar-right', '.sidebar-wrapper',
-  '.aside', '.widget', '.widget-area',
+  '.aside', 
+  '.widget', '.widget-area',
   '.modal', '.popup', '.overlay',
+  'dialog', 'p-dialog', 'mat-dialog', 'v-dialog', '[role="dialog"]',
   '.ad', '.ads', '.adsbygoogle',
   '.advertisement', '.banner',
   '.social', '.social-media', '.share',
-  '.breadcrumb', '.breadcrumbs',
+  // '.breadcrumb', '.breadcrumbs',
   '.related', '.related-posts',
   '.comments', '#comments',
   '.cookie', '.cookie-banner',
   '#cookie-notice', '.gdpr',
+  '[id*="cookie"]', '[id*="popup"]', '[id*="dialog"]',
   '.newsletter', '.subscription',
   '.search', '#search',
   '.menu', '.navigation',
-  '.promo', '.promotion',
+  // '.promo', '.promotion',
   // Forms and inputs
-  'form', 'button', 'input', 'textarea', 'select',
+  // 'form',
+  'button',
+  'input', 'textarea', 'select',
   // Pagination
   '.pager', '.pagination', '[role="navigation"]',
   // Icons
@@ -50,46 +57,47 @@ export class WebContentProcessor {
   /**
    * Aggressively clean HTML by removing scripts, styles, and unwanted elements
    * Based on Firecrawl's optimization strategy
+   * Uses Cheerio for fast HTML parsing and manipulation
    */
-  private cleanHtml(html: string, url: string): string {
+  public cleanHtml(html: string, url: string): string {
     try {
       // Remove HTML comments before parsing
       html = html.replace(/<!--[\s\S]*?-->/g, '');
 
-      const dom = new JSDOM(html, { url });
-      const document = dom.window.document;
+      const $ = cheerio.load(html);
       const sizeBefore = html.length;
 
       // Remove unwanted tags completely
       ['script', 'style', 'meta', 'noscript', 'link', 'head'].forEach(tag => {
-        document.querySelectorAll(tag).forEach(el => el.remove());
+        $(tag).remove();
       });
 
       // Remove unwanted elements by selector
       EXCLUDE_SELECTORS.forEach(selector => {
         try {
-          document.querySelectorAll(selector).forEach(el => el.remove());
+          $(selector).remove();
         } catch (e) {
           // Invalid selector, skip
         }
       });
 
       // Remove hidden elements
-      document.querySelectorAll('[style*="display:none"], [style*="visibility:hidden"], [aria-hidden="true"]').forEach(el => el.remove());
+      $('[style*="display:none"], [style*="visibility:hidden"], [aria-hidden="true"]').remove();
 
       // Remove empty elements
       ['div', 'span', 'p', 'section'].forEach(tag => {
-        document.querySelectorAll(tag).forEach(el => {
-          if (!el.textContent?.trim() && el.children.length === 0) {
-            el.remove();
+        $(tag).each((_, el) => {
+          const $el = $(el);
+          if (!$el.text()?.trim() && $el.children().length === 0) {
+            $el.remove();
           }
         });
       });
 
       // Remove base64 encoded images (data:image/...)
-      document.querySelectorAll('img[src^="data:image"]').forEach(el => el.remove());
+      $('img[src^="data:image"]').remove();
 
-      let cleanedHtml = document.body ? document.body.innerHTML : html;
+      let cleanedHtml = $('body').html() || $.html();
 
       // Normalize whitespace: remove excessive spaces, tabs, and newlines between tags
       cleanedHtml = cleanedHtml
@@ -318,6 +326,8 @@ export class WebContentProcessor {
     // For markdown format, extract main content and convert to markdown
     if (this.options.format === 'markdown') {
       // Extract main content using Readability
+      // NOTE: jsdom is retained here because @mozilla/readability requires a real DOM Document object.
+      // Cheerio cannot be used as it doesn't provide the standard DOM API that Readability expects.
       logger.info(`${this.logPrefix} Extracting main content`);
       const dom = new JSDOM(html, { url });
       const reader = new Readability(dom.window.document);

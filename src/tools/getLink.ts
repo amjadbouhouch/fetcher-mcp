@@ -1,5 +1,5 @@
 import { Browser, Page } from "playwright";
-import { JSDOM } from "jsdom";
+import * as cheerio from "cheerio";
 import { BrowserService } from "../services/browserService.js";
 import { FetchOptions } from "../types/index.js";
 import { logger } from "../utils/logger.js";
@@ -10,7 +10,7 @@ import { logger } from "../utils/logger.js";
 export const getLinksTool = {
   name: "get_links",
   description:
-    "Extract clickable links from a specified web page, returning up to 100 absolute URLs at a time with their titles. Supports pagination via offset parameter.",
+    "Extract clickable links from a specified web page, returning up to 100 absolute URLs sorted alphabetically at a time. Supports pagination via offset parameter.",
   inputSchema: {
     type: "object",
     properties: {
@@ -24,11 +24,11 @@ export const getLinksTool = {
         description:
           "Page loading timeout in milliseconds, default is 30000 (30 seconds)",
       },
-      waitUntil: {
-        type: "string",
-        description:
-          "Specifies when navigation is considered complete, options: 'load', 'domcontentloaded', 'networkidle', 'commit', default is 'networkidle'",
-      },
+      // waitUntil: {
+      //   type: "string",
+      //   description:
+      //     "Specifies when navigation is considered complete, options: 'load', 'domcontentloaded', 'networkidle', 'commit', default is 'networkidle'",
+      // },
       offset: {
         type: "number",
         description:
@@ -37,7 +37,7 @@ export const getLinksTool = {
       search: {
         type: "string",
         description:
-          "Optional regex pattern to filter links. Returns links where the pattern matches either the URL or the title. Case-insensitive by default.",
+          "Optional regex pattern to filter links. Returns links where the pattern matches the URL. Case-insensitive by default.",
       },
     },
     required: ["url"],
@@ -77,14 +77,10 @@ export async function getLinks(args: any) {
 
   const options: FetchOptions = {
     timeout: Number(args?.timeout) || 30000,
-    waitUntil: String(args?.waitUntil || "networkidle") as
-      | "load"
-      | "domcontentloaded"
-      | "networkidle"
-      | "commit",
+    waitUntil: "networkidle",
     // Unused in this tool but required by BrowserService options
     format: "html" as "html" | "markdown",
-    onlyMainContent: false, // Not used for link extraction
+    onlyMainContent: true, // Not used for link extraction
     maxLength: 0,
     waitForNavigation: false,
     navigationTimeout: 10000,
@@ -131,13 +127,11 @@ export async function getLinks(args: any) {
     // Get page HTML content
     const html = await page.content();
 
-    // Parse HTML with JSDOM
-    const dom = new JSDOM(html, { url: normalizedUrl });
-    const document = dom.window.document;
+    // Parse HTML with Cheerio
+    const $ = cheerio.load(html);
 
-    // Extract clickable link targets and titles
-    type RawLink = { href: string; title: string };
-    const rawLinks: RawLink[] = [];
+    // Extract clickable link targets
+    const rawLinks: string[] = [];
 
     const cleanup = (s: string | null | undefined) =>
       (s || "").replace(/\s+/g, " ").trim();
@@ -156,44 +150,70 @@ export async function getLinks(args: any) {
       );
     };
 
-    const pushLink = (href: string | null | undefined, title: string | null | undefined) => {
+    // Skip media files and assets - only return navigation URLs
+    const isAsset = (url: string) => {
+      const u = url.toLowerCase();
+
+      // Image extensions
+      const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.ico', '.tiff', '.tif', '.avif', '.heic'];
+
+      // Video extensions
+      const videoExts = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v', '.mpg', '.mpeg', '.3gp'];
+
+      // Audio extensions
+      const audioExts = ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac', '.wma'];
+
+      // Document/Asset extensions
+      const assetExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.7z', '.tar', '.gz'];
+
+      // Font extensions
+      const fontExts = ['.woff', '.woff2', '.ttf', '.eot', '.otf'];
+
+      // Stylesheet and script files
+      const codeExts = ['.css', '.js', '.map', '.json', '.xml'];
+
+      const allExts = [...imageExts, ...videoExts, ...audioExts, ...assetExts, ...fontExts, ...codeExts];
+
+      // Check if URL ends with any asset extension (including query params)
+      return allExts.some(ext => {
+        const urlPath = u.split('?')[0].split('#')[0]; // Remove query params and fragments
+        return urlPath.endsWith(ext);
+      });
+    };
+
+    const pushLink = (href: string | null | undefined) => {
       const h = cleanup(href);
       if (!h || isSkippable(h)) return;
-      rawLinks.push({ href: h, title: cleanup(title) });
+      rawLinks.push(h);
     };
 
     // 1) Standard anchors
-    const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'));
-    for (const a of anchors) {
-      const text = cleanup(a.textContent) || cleanup(a.getAttribute('title')) || cleanup(a.getAttribute('aria-label'));
-      pushLink(a.getAttribute('href'), text);
-    }
+    $('a[href]').each((_, el) => {
+      const $el = $(el);
+      pushLink($el.attr('href'));
+    });
 
     // 2) SVG anchors (xlink:href or href)
-    const svgAnchors = Array.from(document.querySelectorAll('a[href]'));
-    for (const a of svgAnchors) {
-      const href = a.getAttribute('href') || a.getAttribute('xlink:href');
-      if (!href) continue;
-      const text = cleanup(a.textContent) || cleanup(a.getAttribute('title')) || cleanup(a.getAttribute('aria-label'));
-      pushLink(href, text);
-    }
+    $('a[href], a[xlink\\:href]').each((_, el) => {
+      const $el = $(el);
+      const href = $el.attr('href') || $el.attr('xlink:href');
+      if (!href) return;
+      pushLink(href);
+    });
 
     // 3) Image map areas
-    const areas = Array.from(document.querySelectorAll<HTMLAreaElement>('area[href]'));
-    for (const area of areas) {
-      const text = cleanup(area.getAttribute('alt')) || cleanup(area.getAttribute('title'));
-      pushLink(area.getAttribute('href'), text);
-    }
+    $('area[href]').each((_, el) => {
+      const $el = $(el);
+      pushLink($el.attr('href'));
+    });
 
     // 4) Elements with data-href
-    const dataHrefEls = Array.from(document.querySelectorAll('[data-href]'));
-    for (const el of dataHrefEls) {
-      const text = cleanup(el.textContent) || cleanup(el.getAttribute('title')) || cleanup(el.getAttribute('aria-label'));
-      pushLink(el.getAttribute('data-href'), text);
-    }
+    $('[data-href]').each((_, el) => {
+      const $el = $(el);
+      pushLink($el.attr('data-href'));
+    });
 
     // 5) Elements with onclick that navigates
-    const onclickEls = Array.from(document.querySelectorAll('[onclick]'));
     const extractFromOnclick = (s: string): string | null => {
       const str = s || '';
       // window.open('...'), location='...', location.href='...'
@@ -203,12 +223,12 @@ export async function getLinks(args: any) {
       if (m2) return m2[1];
       return null;
     };
-    for (const el of onclickEls) {
-      const href = extractFromOnclick(el.getAttribute('onclick') || '');
-      if (!href) continue;
-      const text = cleanup(el.textContent) || cleanup(el.getAttribute('title')) || cleanup(el.getAttribute('aria-label'));
-      pushLink(href, text);
-    }
+    $('[onclick]').each((_, el) => {
+      const $el = $(el);
+      const href = extractFromOnclick($el.attr('onclick') || '');
+      if (!href) return;
+      pushLink(href);
+    });
 
     // Resolve to absolute URLs when possible
     const base = new URL(normalizedUrl);
@@ -229,23 +249,27 @@ export async function getLinks(args: any) {
       }
     };
 
-    // Deduplicate by final URL while preserving order
+    // Deduplicate by final URL and filter out assets
     const seen = new Set<string>();
     let allLinks = rawLinks
-      .map(({ href, title }) => ({ url: toAbsolute(href), title: title || "" }))
-      .filter(({ url }) => {
+      .map((href) => toAbsolute(href))
+      .filter((url) => {
+        // Skip if already seen
         if (seen.has(url)) return false;
+        // Skip if it's an asset/media file
+        if (isAsset(url)) return false;
         seen.add(url);
         return true;
       });
 
     // Apply search filter if provided
     if (searchRegex) {
-      allLinks = allLinks.filter(({ url, title }) => {
-        return searchRegex.test(url) || searchRegex.test(title);
-      });
+      allLinks = allLinks.filter((url) => searchRegex.test(url));
       logger.info(`[GetLinks] Filter applied: ${allLinks.length} links match the pattern`);
     }
+
+    // Sort links alphabetically
+    allLinks.sort();
 
     // Apply pagination
     const limit = 100;
